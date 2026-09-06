@@ -1,4 +1,4 @@
-# ADR-0057: Populate REQUEST_BODY/REQUEST_BODY_LENGTH when a body processor ran, opt-in
+# ADR-0057: REQUEST_BODY opt-in, REQUEST_BODY_LENGTH always, when a processor ran
 
 - **Status:** proposed
 - **Date:** 2026-09-06 (expected; update before merge)
@@ -51,10 +51,16 @@ without changing the default *behaviour* seen by existing rules.
 - **A — populate unconditionally.** Set `REQUEST_BODY`/`REQUEST_BODY_LENGTH`
   centrally in `ProcessRequestBody`, before dispatching to any processor, so every
   processor behaves like v3 by default.
-- **B — extend the existing opt-in.** Make `SecForceRequestBodyVariable`/
-  `ctl:forceRequestBodyVariable` also populate `REQUEST_BODY` when a body processor
-  *did* run (today the flag only takes effect when the processor is empty); always
-  populate `REQUEST_BODY_LENGTH` unconditionally, since it costs nothing.
+- **B — extend the existing opt-in.** In `ProcessRequestBody`, capture the raw
+  body from `requestBodyBuffer.Reader()` into `REQUEST_BODY` *before* dispatching
+  to the body processor, gated on `SecForceRequestBodyVariable`/
+  `ctl:forceRequestBodyVariable` being set (today the flag only takes effect when
+  the processor is empty). Because the capture happens before parsing, a parse
+  failure — xml.go's early return on the classic XXE payload, or `json`'s
+  "invalid JSON" error — does not prevent `REQUEST_BODY` from being set; only the
+  *parsed* collections (`XML:/*`, `ARGS_POST`) stay empty on a parse error, as they
+  do today. Always populate `REQUEST_BODY_LENGTH` unconditionally, since it costs
+  nothing regardless of this flag.
 - **C — a new directive, default-on**, deferred until the `#1628` body-size guard
   lands, so a v3-by-default `REQUEST_BODY` cannot reintroduce the memory blow-up
   `#1628` is asking to fix.
@@ -62,8 +68,10 @@ without changing the default *behaviour* seen by existing rules.
 ## Decision Outcome
 
 Leaning towards **B**, because it gets v3-equivalent visibility for rules that ask
-for it — CRS can flip `ctl:forceRequestBodyVariable=On` in phase 1 for `text/xml`
-only, paying the copy exactly where the XXE rule needs it — while keeping the
+for it — CRS can flip `ctl:forceRequestBodyVariable=On` in phase 1 scoped to the
+XML content types `coraza.conf-recommended` already maps to the XML processor
+(`text/xml`, `application/xml`, `application/soap+xml`), paying the copy exactly
+where the XXE rule needs it — while keeping the
 default behaviour, and the two `testing/engine/json.go` profiles, unchanged. `A`
 gives v3 semantics uniformly but changes default behaviour for everyone and
 reopens the `#1628` memory concern without its guard in place; `C` is safer but
@@ -82,12 +90,16 @@ questions below are unresolved.
 > out should be possible."
 > — @jcchavezs ([comment](https://github.com/corazawaf/coraza/issues/1685#issuecomment-5392976005))
 
+<!-- separate comment -->
+
 > "One case is worse than "double": once the body exceeds
 > `SecRequestBodyInMemoryLimit` the buffer has spilled to a temp file
 > (`internal/corazawaf/body_buffer.go:78`), so materializing the variable pulls a
 > disk-backed body back into RAM and defeats the in-memory limit. That is the part
 > I would want a guard on, and it is the same guard #1628 is asking for."
 > — @fzipi ([comment](https://github.com/corazawaf/coraza/issues/1685#issuecomment-5411063069))
+
+<!-- separate comment -->
 
 > "I think we can get opt-in without adding any config surface, by reusing what is
 > already there. `SecForceRequestBodyVariable` and `ctl:forceRequestBodyVariable`
@@ -111,7 +123,8 @@ questions below are unresolved.
   cost; no new directive to document or maintain; default behaviour and existing
   engine profiles are unaffected.
 - **Negative / follow-up:** rule authors (CRS included) must explicitly enable the
-  flag — typically scoped to `text/xml` in phase 1 — to get the coverage; this does
+  flag — typically scoped to the XML content types (`text/xml`, `application/xml`,
+  `application/soap+xml`) in phase 1 — to get the coverage; this does
   not fix xml.go's early-return-on-parse-error path, which still means the XML
   collections stay empty on a parse failure even though `REQUEST_BODY` would now be
   populated; the `json` processor's `TX:json_request_body` workaround is not

@@ -66,8 +66,8 @@ func (mbp *multipartBodyProcessor) ProcessRequest(reader io.Reader, v plugintype
 		filename := originFileName(p)
 		if filename != "" {
 			seenUnexpectedEOF := false
-			// Only copy the file to a temporary one when not running in TinyGo,
-			// otherwise the part is drained and only its size is kept.
+			// Only copy the file to a temporary one on builds with filesystem
+			// access, otherwise the part is drained and only its size is kept.
 			dst := io.Discard
 			if environment.HasAccessToFS {
 				temp, err := os.CreateTemp(storagePath, "crzmp*")
